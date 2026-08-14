@@ -499,7 +499,7 @@ print(f"\nFor comparison, centro-parietal P300 ROI ({', '.join(chs_P300)}), {win
 # FIG 3 — FRN
 # =============================================================
 
-win_FRN_narrow = (0.190, 0.270)  # 190–270 ms, per your request
+win_FRN_narrow = (0.190, 0.270)  # 190–270 ms
 frn_conditions = ["congruent", "incongruent", "no_reveal"]  # no_reveal excluded
 
 fig3 = plt.figure(figsize=(14, 5))
@@ -701,6 +701,113 @@ result2 = model2.fit(method=["lbfgs"], maxiter=2000)
 print(result2.summary())
 print("Converged:", result2.converged)
 
+
+## Repeat for FRN 
+
+# =============================================================
+# FRN — Congruent vs Incongruent reveals, restricted to trials
+# where the participant's response matches theory prediction
+# =============================================================
+
+def plot_frn_theory_tracking(grand_epochs, correct_value, title_label, filename):
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for cond in ["congruent", "incongruent"]:
+        query = f"{TRIALTYPE_COL} == '{cond}' and {CORRECT_COL} == {correct_value}"
+        try:
+            evoked = grand_epochs[query].average()
+        except Exception:
+            continue
+
+        available = [c for c in chs_FRN if c in evoked.ch_names]
+        if len(available) == 0:
+            continue
+        idx = [evoked.ch_names.index(c) for c in available]
+
+        amp = evoked.data[idx].mean(axis=0) * 1e6
+        times = evoked.times * 1000
+        n_trials = evoked.nave
+
+        ax.plot(
+            times, amp,
+            label=f"{cond} (n={n_trials})",
+            color=condition_colors[cond],
+            linewidth=2,
+        )
+
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axvline(0, color="black", linewidth=0.6, linestyle=":")
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude (µV)")
+    ax.set_title(f"FRN — {title_label} — {', '.join(chs_FRN)}")
+    ax.invert_yaxis()
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(root / filename, dpi=300)
+    plt.close(fig)
+
+plot_frn_theory_tracking(
+    grand_epochs,
+    correct_value=1,
+    title_label="Theory-Congruent Responses (correct=1)",
+    filename="fig_FRN_theory_congruent_congruency.png",
+)
+
+plot_frn_theory_tracking(
+    grand_epochs,
+    correct_value=0,
+    title_label="Theory-Deviant Responses (correct=0)",
+    filename="fig_FRN_theory_deviant_congruency.png",
+)
+
+# =============================================================
+# Trial-level LMM: FRN amplitude ~ trial_type * correct + (1|subject)
+# =============================================================
+rows_frn = []
+for subj_idx, epochs in enumerate(all_epochs):
+    subj_id = getattr(epochs, "subject_id", subj_idx)
+
+    for cond in ["congruent", "incongruent"]:
+        for correct_val in [0, 1]:
+            query = f"trial_type == '{cond}' and correct == {correct_val}"
+            try:
+                sub_epochs = epochs[query]
+            except Exception:
+                continue
+
+            if len(sub_epochs) == 0:
+                continue
+
+            available = [c for c in chs_FRN if c in sub_epochs.ch_names]
+            idx = [sub_epochs.ch_names.index(c) for c in available]
+
+            data = sub_epochs.get_data()[:, idx, :].mean(axis=1)  # trials x time
+            times = sub_epochs.times
+            mask = (times >= win_FRN[0]) & (times <= win_FRN[1])
+
+            trial_amps = data[:, mask].mean(axis=1) * 1e6
+
+            for amp in trial_amps:
+                rows_frn.append(dict(subject=subj_id, trial_type=cond,
+                                      correct=correct_val, amplitude=amp))
+
+df_trials_frn = pd.DataFrame(rows_frn)
+print(f"Total trials in FRN model: {len(df_trials_frn)}")
+print(df_trials_frn.groupby(["trial_type", "correct"])["amplitude"].count())
+
+df_trials_frn["trial_type"] = df_trials_frn["trial_type"].astype("category")
+df_trials_frn["correct"] = df_trials_frn["correct"].astype("category")
+
+model_frn = smf.mixedlm(
+    "amplitude ~ C(trial_type, Treatment('congruent')) * C(correct, Treatment(1))",
+    data=df_trials_frn,
+    groups=df_trials_frn["subject"],
+)
+result_frn = model_frn.fit(method=["lbfgs"], maxiter=2000)
+print(result_frn.summary())
+print("Converged:", result_frn.converged)
+
 # =============================================================
 # FIG 3 — Difference waves 
 # =============================================================
@@ -775,82 +882,82 @@ fig4b.savefig(root / "fig4b_topomap_incongruent.png", dpi=300)
 # FIG 4 — Subject-averaged P300 waveform (congruent, incongruent, no_reveal) by
 # HMM-classified response strategy group
 # =============================================================
-hmm_groups = {
-    "Single switch: theory→deviant": ["subj01", "subj05", "subj06", "subj09",
-                                       "subj16", "subj17", "subj19"],
-    "Single switch: deviant→theory": ["subj02", "subj15"],
-    "Oscillating": ["subj03", "subj07", "subj14"],
-    "Theory-consistent throughout": ["subj08", "subj10"],
-    "Random": ["subj13", "subj20"],
-}
+# hmm_groups = {
+#     "Single switch: theory→deviant": ["subj01", "subj05", "subj06", "subj09",
+#                                        "subj16", "subj17", "subj19"],
+#     "Single switch: deviant→theory": ["subj02", "subj15"],
+#     "Oscillating": ["subj03", "subj07", "subj14"],
+#     "Theory-consistent throughout": ["subj08", "subj10"],
+#     "Random": ["subj13", "subj20"],
+# }
 
-# --------------------------------------------------------
-# Per-subject mean ROI waveform, per condition
-# --------------------------------------------------------
-subj_condition_waves = {}  # (subject, condition) -> (times, amp array in µV)
+# # --------------------------------------------------------
+# # Per-subject mean ROI waveform, per condition
+# # --------------------------------------------------------
+# subj_condition_waves = {}  # (subject, condition) -> (times, amp array in µV)
 
-for epochs in all_epochs:
-    subj_id = epochs.metadata["subject"].iloc[0]
+# for epochs in all_epochs:
+#     subj_id = epochs.metadata["subject"].iloc[0]
 
-    for cond in conditions:  # congruent, incongruent, no_reveal
-        try:
-            evoked = epochs[f"trial_type == '{cond}'"].average()
-        except Exception:
-            continue
-        if evoked.nave == 0:
-            continue
+#     for cond in conditions:  # congruent, incongruent, no_reveal
+#         try:
+#             evoked = epochs[f"trial_type == '{cond}'"].average()
+#         except Exception:
+#             continue
+#         if evoked.nave == 0:
+#             continue
 
-        available = [c for c in chs_P300 if c in evoked.ch_names]
-        if len(available) == 0:
-            continue
-        idx = [evoked.ch_names.index(c) for c in available]
+#         available = [c for c in chs_P300 if c in evoked.ch_names]
+#         if len(available) == 0:
+#             continue
+#         idx = [evoked.ch_names.index(c) for c in available]
 
-        amp = evoked.data[idx].mean(axis=0) * 1e6
-        subj_condition_waves[(subj_id, cond)] = (evoked.times * 1000, amp)
+#         amp = evoked.data[idx].mean(axis=0) * 1e6
+#         subj_condition_waves[(subj_id, cond)] = (evoked.times * 1000, amp)
 
-# --------------------------------------------------------
-# Plot: one panel per HMM group, subject-averaged per condition
-# --------------------------------------------------------
-fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=True, sharey=True)
-axes_flat = axes.ravel()
+# # --------------------------------------------------------
+# # Plot: one panel per HMM group, subject-averaged per condition
+# # --------------------------------------------------------
+# fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=True, sharey=True)
+# axes_flat = axes.ravel()
 
-for ax, (group_name, subj_list) in zip(axes_flat, hmm_groups.items()):
-    n_found = 0
-    for cond in conditions:
-        curves = []
-        for subj_id in subj_list:
-            key = (subj_id, cond)
-            if key in subj_condition_waves:
-                curves.append(subj_condition_waves[key][1])
-        if len(curves) == 0:
-            continue
+# for ax, (group_name, subj_list) in zip(axes_flat, hmm_groups.items()):
+#     n_found = 0
+#     for cond in conditions:
+#         curves = []
+#         for subj_id in subj_list:
+#             key = (subj_id, cond)
+#             if key in subj_condition_waves:
+#                 curves.append(subj_condition_waves[key][1])
+#         if len(curves) == 0:
+#             continue
 
-        times = subj_condition_waves[(subj_list[0], cond)][0] if (subj_list[0], cond) in subj_condition_waves else None
-        # fall back: grab times from whichever subject actually has this condition
-        for subj_id in subj_list:
-            if (subj_id, cond) in subj_condition_waves:
-                times = subj_condition_waves[(subj_id, cond)][0]
-                break
+#         times = subj_condition_waves[(subj_list[0], cond)][0] if (subj_list[0], cond) in subj_condition_waves else None
+#         # fall back: grab times from whichever subject actually has this condition
+#         for subj_id in subj_list:
+#             if (subj_id, cond) in subj_condition_waves:
+#                 times = subj_condition_waves[(subj_id, cond)][0]
+#                 break
 
-        mean_curve = np.mean(curves, axis=0)
-        n_found = max(n_found, len(curves))
-        ax.plot(times, mean_curve, label=cond, color=condition_colors[cond], linewidth=2)
+#         mean_curve = np.mean(curves, axis=0)
+#         n_found = max(n_found, len(curves))
+#         ax.plot(times, mean_curve, label=cond, color=condition_colors[cond], linewidth=2)
 
-    ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.axvline(0, color="black", linewidth=0.6, linestyle=":")
-    ax.set_title(f"{group_name} (n={len(subj_list)})", fontsize=10)
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Amplitude (µV)")
-    ax.invert_yaxis()
-    ax.legend(fontsize=8)
+#     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+#     ax.axvline(0, color="black", linewidth=0.6, linestyle=":")
+#     ax.set_title(f"{group_name} (n={len(subj_list)})", fontsize=10)
+#     ax.set_xlabel("Time (ms)")
+#     ax.set_ylabel("Amplitude (µV)")
+#     ax.invert_yaxis()
+#     ax.legend(fontsize=8)
 
-# hide the unused 6th panel (5 groups in a 2x3 grid)
-axes_flat[-1].axis("off")
+# # hide the unused 6th panel (5 groups in a 2x3 grid)
+# axes_flat[-1].axis("off")
 
-fig.suptitle("P300 Waveform by HMM-Classified Response Strategy (Subject-Averaged)",
-             fontsize=13, fontweight="bold")
-fig.tight_layout()
-fig.savefig(root / "fig_P300_by_HMM_group.png", dpi=300)
+# fig.suptitle("P300 Waveform by HMM-Classified Response Strategy (Subject-Averaged)",
+#              fontsize=13, fontweight="bold")
+# fig.tight_layout()
+# fig.savefig(root / "fig_P300_by_HMM_group.png", dpi=300)
 
 # =============================================================
 # STATISTICS — 1. RM-ANOVA: congruency main effect
